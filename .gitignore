@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 index.db
 .DS_Store
+dist/
+*.egg-info/
+.venv/

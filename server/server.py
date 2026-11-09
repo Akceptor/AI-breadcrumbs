@@ -397,9 +397,13 @@ def read_session(
     return head + "\n" + body
 
 
-if __name__ == "__main__":
+def main() -> None:
     os.makedirs(DB_PATH.parent, exist_ok=True)
     if "--sync" in sys.argv[1:]:
         _sync().close()
     else:
         mcp.run()
+
+
+if __name__ == "__main__":
+    main()
