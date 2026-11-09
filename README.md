@@ -1,106 +1,92 @@
 # claude-breadcrumbs
 
-Session continuity for Claude Code and Codex CLI: find past work, and carry verified state across `/clear` (Claude Code) or `/new` (Codex).
+Session continuity for Claude Code and Codex CLI: search past sessions of both tools, and carry verified state across `/clear` (Claude Code) or `/new` (Codex), including from one tool to the other.
+
+## Install with APM (recommended)
+
+Prerequisites: [uv](https://docs.astral.sh/uv/), `python3`, [APM](https://github.com/microsoft/apm) (developed against 0.33.0), `gh auth login` (APM validates private repos through the GitHub API) and a GitHub SSH key (the MCP server is fetched by `uvx` over SSH).
+
+1. **Enable both targets in `~/.apm/apm.yml`.** This is required:
+
+   ```yaml
+   targets: [claude, codex]
+   ```
+
+   `apm install -g ... --target claude,codex` deploys to Codex once but does not persist the target. If the manifest says `targets: [claude]`, the next plain `apm install -g` removes the Codex deployments. A per-dependency `targets:` only narrows the global list, never widens it. To keep another dependency Claude-only, give it object form:
+
+   ```yaml
+   dependencies:
+     apm:
+       - git: your/other-package
+         targets: [claude]
+   ```
+
+2. `apm install -g Akceptor/claude-breadcrumbs`
+3. Pre-warm the MCP environment and index (avoids a startup timeout on the first tool call):
+   `uvx --from git+ssh://git@github.com/Akceptor/claude-breadcrumbs breadcrumbs-mcp --sync`
+4. **Codex only:** open Codex, run `/hooks` and trust the two new hooks. Codex skips untrusted hooks, and a changed hook command needs re-trusting.
+5. Claude Code, optional (APM cannot set these): in `~/.claude/settings.json` allow the tools and stop transcript cleanup:
+
+   ```json
+   { "cleanupPeriodDays": 3650, "permissions": { "allow": ["mcp__sessions"] } }
+   ```
+
+Update: `apm update -g` for hooks and skills (the MCP server tracks `main` on each start). Uninstall: `apm uninstall -g Akceptor/claude-breadcrumbs`.
+
+### Where things land (user scope)
+
+| | Claude Code | Codex |
+|---|---|---|
+| Skills `handoff`, `past-sessions` | `~/.claude/skills/` | `~/.agents/skills/` |
+| Hooks config | merged into `~/.claude/settings.json` | merged into `~/.codex/hooks.json` |
+| Hook scripts | `~/.claude/hooks/<pkg>/scripts/` | `~/.codex/hooks/<pkg>/scripts/` |
+| MCP `sessions` | `mcpServers` in `~/.claude.json` | `[mcp_servers.sessions]` in `~/.codex/config.toml` |
+
+`<pkg>` is the install directory name (the repo name for git installs, unverified). The scripts never depend on it.
 
 ## Components
 
-### `sessions-mcp/` — search past sessions
+- `server/server.py`: MCP server `sessions`. Indexes every Claude Code transcript (`~/.claude/projects/*/*.jsonl`) and Codex rollout (`$CODEX_HOME/sessions/**/rollout-*.jsonl[.zst]`) into one SQLite FTS5 database at `~/.claude/session-index/index.db`. Tools: `search_sessions`, `list_sessions`, `read_session`, each with a `source` filter (`claude` or `codex`; omit for both). Indexing is incremental on every tool call; `--sync` indexes once and exits. Packaged as the `breadcrumbs-mcp` console script via `pyproject.toml`.
+- `.apm/skills/handoff`: writes `~/.breadcrumbs/handoffs/<cwd-slug>.md` (Goal, Verified state, Ruled out, Hypothesis, Next step, Environment). Explicit invocation only: `/handoff` in Claude Code, `$handoff` in Codex.
+- `scripts/handoff-load.py` (`SessionStart`, matcher `startup|clear`): injects a handoff younger than 3 days for the cwd, then renames it to `<slug>.prev.md` (one-shot). The folder is shared, so a handoff written in one tool loads in the other.
+- `scripts/ctx-guard.py` (`UserPromptSubmit`): nudges once per band per session. Claude Code: 200k / 350k / 500k tokens. Codex: 50% / 70% / 85% of the context window (a single 200k band if the rollout reports none). State is kept in `~/.breadcrumbs/state/`. The tool is detected from the transcript path, a Codex-only `turn_id` field, then the script's own install location; `BREADCRUMBS_TOOL=claude|codex` overrides.
+- `.apm/skills/past-sessions`: tells the model to search past sessions when you refer to earlier work (replaces the CLAUDE.md / AGENTS.md paragraph, which APM cannot edit).
 
-MCP server that indexes every Claude Code transcript (`~/.claude/projects/*/*.jsonl`) and every Codex rollout (`$CODEX_HOME/sessions/**/rollout-*.jsonl[.zst]`, default `~/.codex`) into one local SQLite FTS5 database and exposes:
+### MCP trade-off
 
-- `search_sessions(query, project?, since?, limit?, source?)` — full-text search, FTS5 syntax
-- `list_sessions(project?, since?, limit?, source?)` — recent sessions with title, branch, first prompt
-- `read_session(session_id, offset?, limit?, include_tools?, grep?)` — page through a conversation
+The MCP entry is `uvx --from git+ssh://git@github.com/Akceptor/claude-breadcrumbs breadcrumbs-mcp`, unpinned. Each start runs a `git fetch`, so it needs GitHub reachable and fails offline; the first start also builds the environment. Offline options: pin `@<sha>` in the `--from` URL (no fetch, runs from cache), or register `uv run -q --script <path>/server/server.py` yourself.
 
-`source` is `claude` or `codex`; omit it to search both. Codex sessions use the cwd slug as `project`, like Claude, so the `project` filter works across both. Codex subagent rollouts are skipped. Codex stores most older rollouts zstd-compressed, hence the `zstandard` dependency (handled by the `uv` inline script header); `server.py --sync` indexes everything once and exits, used by the installers to pre-warm.
+## Fallback install without APM
 
-Indexing is incremental (per-file offset + mtime) and runs on each tool call. The database lives at `~/.claude/session-index/index.db`.
-
-Install (requires [uv](https://docs.astral.sh/uv/) and the `claude` CLI):
-
-```sh
-mkdir -p ~/.claude/session-index
-cp sessions-mcp/* ~/.claude/session-index/
-~/.claude/session-index/install.sh
-```
-
-`install.sh` registers the MCP server (user scope), raises `cleanupPeriodDays` to 3650 so transcripts aren't deleted, allows `mcp__sessions`, and adds a short "Past sessions" instruction to `~/.claude/CLAUDE.md`.
-
-### `handoff/` — checkpoint and resume
-
-- `handoff.md` — `/handoff` slash command. Writes `~/.claude/projects/<cwd-slug>/handoff.md` with Goal, Verified state, Ruled out, Current hypothesis, Next step, Environment.
-- `hooks/handoff-load.py` — `SessionStart` hook. If a handoff under 3 days old exists for the cwd, injects it into the new session and renames it to `handoff.prev.md` (one-shot).
-- `hooks/ctx-guard.py` — `UserPromptSubmit` hook. At 200k / 350k / 500k context tokens (once each per session), nudges you to run `/handoff` then `/clear`.
-
-Install:
+Do not combine with an APM install (the installers refuse when `~/.apm/apm.lock.yaml` lists this package). Both are idempotent, copy `server/server.py` to `~/.claude/session-index/`, install the `handoff` skill and hooks under `<tool home>/hooks/claude-breadcrumbs/scripts/`, and add a "Past sessions" paragraph to `CLAUDE.md` / `AGENTS.md`.
 
 ```sh
-mkdir -p ~/.claude/commands ~/.claude/hooks
-cp handoff/handoff.md ~/.claude/commands/
-cp handoff/hooks/*.py ~/.claude/hooks/
+installers/claude/install.sh   # needs the claude CLI; also sets cleanupPeriodDays and allows mcp__sessions
+installers/codex/install.sh    # needs the codex CLI; then trust the hooks via /hooks
 ```
 
-Then add to `~/.claude/settings.json`:
+## Repository layout
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "clear|startup",
-        "hooks": [
-          { "type": "command", "command": "python3 ~/.claude/hooks/handoff-load.py 2>/dev/null || true", "timeout": 10 }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          { "type": "command", "command": "python3 ~/.claude/hooks/ctx-guard.py 2>/dev/null || true", "timeout": 10 }
-        ]
-      }
-    ]
-  }
-}
+```
+apm.yml  pyproject.toml  hooks/hooks.json     APM manifest, console script, hook config
+.apm/skills/{handoff,past-sessions}/          skills for both tools
+scripts/                                      hook scripts and shared helpers
+server/server.py                              sessions MCP server
+installers/{claude,codex}/install.sh          non-APM fallbacks (installers/merge_hooks.py is shared)
 ```
 
-Workflow: `/handoff` → `/clear` → new session starts with the checkpoint loaded.
+## Not verified yet
 
-## Codex CLI
+Tested against synthetic fixtures, documented schemas and temp-HOME APM installs only:
 
-Requires [uv](https://docs.astral.sh/uv/), `python3` and the `codex` CLI (developed against codex-cli 0.167.0).
-
-```sh
-codex/install.sh
-```
-
-The installer (idempotent):
-
-- copies `sessions-mcp/server.py` to `~/.claude/session-index/server.py` (shared with the Claude install) and runs `codex mcp add sessions`;
-- installs the `$handoff` skill to `$CODEX_HOME/skills/handoff/` (explicit invocation only);
-- copies the hooks to `$CODEX_HOME/hooks/` and merges `SessionStart` (matcher `startup|clear`) and `UserPromptSubmit` entries with absolute paths into `$CODEX_HOME/hooks.json` (a `.bak` is written);
-- adds a "Past sessions" paragraph to `$CODEX_HOME/AGENTS.md`;
-- pre-warms the index.
-
-It refuses to run if `config.toml` already defines `[hooks]`, since Codex warns about mixing `hooks.json` and `config.toml` hooks.
-
-**Trust step:** Codex skips new or changed hooks until you approve them. After installing, open Codex, run `/hooks` and trust the two new hooks. Trust is per hook hash, so if a later install changes a hook command you must re-trust it.
-
-Workflow: `$handoff` -> `/new` -> the new session starts with the checkpoint loaded. Handoffs live in `$CODEX_HOME/handoffs/<cwd-slug>.md` and are renamed to `<cwd-slug>.prev.md` once loaded (one-shot, ignored after 3 days).
-
-The Codex `ctx-guard` nudges at 50% / 70% / 85% of the model's context window (once per band per session; `last_token_usage.input_tokens` against `model_context_window`), or at a single 200k-token band if the rollout reports no window. Codex auto-compacts, so the top band may rarely fire. It ignores subagent prompts.
-
-Not verified yet (tested only against synthetic fixtures and the documented hook schemas):
-
-- which `SessionStart` `source` Codex sends for `/new` versus its clear-terminal command. The matcher is `startup|clear`; if `/new` reports something else the handoff will not auto-load, and the matcher needs adjusting;
-- that `transcript_path` is the active rollout file (the hook falls back to globbing by `session_id`);
-- that hook commands run through a shell (`|| true`, `2>/dev/null`);
-- Codex MCP `tool_timeout_sec` and approval defaults: the installer sets neither, so Codex may prompt before each `sessions` tool call and a very large first index could hit a tool timeout (the pre-warm exists to avoid this);
-- whether `$handoff` receives extra text typed after it (no `$ARGUMENTS` substitution is assumed), and the `/skills` picker behavior;
-- Codex's auto-compaction threshold and rollout retention.
-
-The rollout format is not a stable Codex interface. If a future Codex stops appending to the JSONL rollouts (it has hints of a paginated history store), the index will silently go stale.
+- Codex `SessionStart` `source` for `/new` (matcher is `startup|clear`; if it differs, handoffs will not auto-load), whether `transcript_path` is the live rollout, and that hooks run through a shell.
+- Whether Codex loads skills from `~/.agents/skills`, honors `agents/openai.yaml` there, and tolerates the `disable-model-invocation` frontmatter key.
+- Whether Claude Code passes text typed after `/handoff` (the skill has no `$ARGUMENTS`) and lists the skill as `/handoff`.
+- The install directory name for git installs; only local-path installs were tested.
+- MCP startup timeouts in either tool versus the `uvx` cold start and per-start `git fetch`; Codex may also prompt for each `sessions` tool call.
+- Whether a Codex hook trust survives an `apm update` that leaves the command string unchanged.
+- The Codex rollout format is not a stable interface; if Codex stops appending to the JSONL files, the index goes stale.
 
 ## Privacy
 
-The index database, handoff files (`~/.claude/projects/*/handoff*.md`, `~/.codex/handoffs/`) and transcripts contain your conversations. They stay local; none of them belong in this repo (`index.db` is gitignored).
+The index database, `~/.breadcrumbs/` (handoffs, state) and transcripts contain your conversations. They stay local; none belong in this repo (`index.db` is gitignored).

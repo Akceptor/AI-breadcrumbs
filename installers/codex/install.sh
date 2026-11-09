@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# Idempotent Codex CLI setup: sessions MCP server, $handoff skill, handoff hooks.
+# Non-APM fallback for Codex CLI: sessions MCP server, $handoff skill, handoff hooks.
+# Do not combine with `apm install`; the hooks would run twice.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$DIR/.." && pwd)"
+ROOT="$(cd "$DIR/../.." && pwd)"
 UV="$(command -v uv || true)"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 SERVER_DIR="$HOME/.claude/session-index"
 SERVER="$SERVER_DIR/server.py"
 HOOKS_JSON="$CODEX_HOME/hooks.json"
 AGENTS_MD="$CODEX_HOME/AGENTS.md"
+PLUGIN_ROOT="$CODEX_HOME/hooks/claude-breadcrumbs"
 
 [ -x "$UV" ] || { echo "uv not found; install it (brew install uv)"; exit 1; }
 command -v codex >/dev/null 2>&1 || { echo "codex not found on PATH"; exit 1; }
+if grep -qs 'claude-breadcrumbs' "$HOME/.apm/apm.lock.yaml"; then
+  echo "claude-breadcrumbs is installed via APM; don't mix it with this installer (uninstall it first: apm uninstall -g Akceptor/claude-breadcrumbs)."
+  exit 1
+fi
 if grep -Eq '^\s*\[+\s*hooks[].]' "$CODEX_HOME/config.toml" 2>/dev/null; then
   echo "$CODEX_HOME/config.toml already defines [hooks]; Codex warns when hooks.json and config.toml are mixed."
   echo "Move those hooks into hooks.json (or add the two hooks there yourself), then re-run."
@@ -20,10 +26,10 @@ if grep -Eq '^\s*\[+\s*hooks[].]' "$CODEX_HOME/config.toml" 2>/dev/null; then
 fi
 
 mkdir -p "$SERVER_DIR" "$CODEX_HOME"
-if cmp -s "$ROOT/sessions-mcp/server.py" "$SERVER" 2>/dev/null; then
+if cmp -s "$ROOT/server/server.py" "$SERVER" 2>/dev/null; then
   echo "server: up to date"
 else
-  cp "$ROOT/sessions-mcp/server.py" "$SERVER"
+  cp "$ROOT/server/server.py" "$SERVER"
   echo "server: copied to $SERVER"
 fi
 
@@ -34,40 +40,13 @@ else
   echo "mcp: sessions registered"
 fi
 
-mkdir -p "$CODEX_HOME/skills" "$CODEX_HOME/hooks"
+mkdir -p "$CODEX_HOME/skills" "$PLUGIN_ROOT/scripts"
 rm -rf "$CODEX_HOME/skills/handoff"
-cp -R "$DIR/skills/handoff" "$CODEX_HOME/skills/handoff"
+cp -R "$ROOT/.apm/skills/handoff" "$CODEX_HOME/skills/handoff"
 echo "skill: \$handoff installed"
-cp "$DIR"/hooks/*.py "$CODEX_HOME/hooks/"
+cp "$ROOT"/scripts/*.py "$PLUGIN_ROOT/scripts/"
 
-CHANGED="$(python3 - "$HOOKS_JSON" "$CODEX_HOME/hooks" <<'PY'
-import json, os, shutil, sys
-path, hooks_dir = sys.argv[1], sys.argv[2]
-d = json.load(open(path)) if os.path.exists(path) else {}
-hooks = d.setdefault("hooks", {})
-wanted = {
-    "SessionStart": ("startup|clear", f"python3 {hooks_dir}/handoff-load.py 2>/dev/null || true"),
-    "UserPromptSubmit": (None, f"python3 {hooks_dir}/ctx-guard.py 2>/dev/null || true"),
-}
-changed = False
-for event, (matcher, cmd) in wanted.items():
-    groups = hooks.setdefault(event, [])
-    if any(h.get("command") == cmd for g in groups for h in g.get("hooks", [])):
-        continue
-    group = {"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}
-    if matcher:
-        group = {"matcher": matcher, **group}
-    groups.append(group)
-    changed = True
-if changed:
-    if os.path.exists(path):
-        shutil.copy(path, path + ".bak")
-    with open(path, "w") as f:
-        json.dump(d, f, indent=2)
-        f.write("\n")
-print("changed" if changed else "unchanged")
-PY
-)"
+CHANGED="$(python3 "$ROOT/installers/merge_hooks.py" "$ROOT/hooks/hooks.json" "$HOOKS_JSON" "$PLUGIN_ROOT")"
 echo "hooks.json: $CHANGED"
 
 if grep -q "^## Past sessions" "$AGENTS_MD" 2>/dev/null; then
