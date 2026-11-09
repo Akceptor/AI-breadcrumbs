@@ -28,3 +28,10 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "CODEX_HOME", codex, raising=False)
     mod.tmp = tmp_path
     return mod
+
+
+@pytest.fixture
+def cserver(server):
+    shutil.copytree(FIXTURES / "codex" / "sessions", server.CODEX_HOME / "sessions")
+    shutil.copy(FIXTURES / "codex" / "session_index.jsonl", server.CODEX_HOME / "session_index.jsonl")
+    return server
