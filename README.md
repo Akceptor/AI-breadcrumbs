@@ -48,7 +48,7 @@ Update: `apm update -g` for hooks and skills (the MCP server tracks `main` on ea
 
 - `server/server.py`: MCP server `sessions`. Indexes every Claude Code transcript (`~/.claude/projects/*/*.jsonl`) and Codex rollout (`$CODEX_HOME/sessions/**/rollout-*.jsonl[.zst]`) into one SQLite FTS5 database at `~/.claude/session-index/index.db`. Tools: `search_sessions`, `list_sessions`, `read_session`, each with a `source` filter (`claude` or `codex`; omit for both). Indexing is incremental on every tool call; `--sync` indexes once and exits. Packaged as the `breadcrumbs-mcp` console script via `pyproject.toml`.
 - `.apm/skills/handoff`: writes `~/.breadcrumbs/handoffs/<cwd-slug>.md` (Goal, Verified state, Ruled out, Hypothesis, Next step, Environment). Explicit invocation only: `/handoff` in Claude Code, `$handoff` in Codex.
-- `scripts/handoff-load.py` (`SessionStart`, matcher `startup|clear|new`): injects a handoff younger than 3 days for the cwd, then renames it to `<slug>.prev.md` (one-shot). The folder is shared, so a handoff written in one tool loads in the other.
+- `scripts/handoff-load.py` (`SessionStart`, matcher `startup|clear`): injects a handoff younger than 3 days for the cwd, then renames it to `<slug>.prev.md` (one-shot). The folder is shared, so a handoff written in one tool loads in the other.
 - `scripts/ctx-guard.py` (`UserPromptSubmit`): nudges once per band per session. Claude Code: 200k / 350k / 500k tokens. Codex: 50% / 70% / 85% of the context window (a single 200k band if the rollout reports none). State is kept in `~/.breadcrumbs/state/`. The tool is detected from the transcript path, a Codex-only `turn_id` field, then the script's own install location; `BREADCRUMBS_TOOL=claude|codex` overrides.
 - `.apm/skills/past-sessions`: tells the model to search past sessions when you refer to earlier work (replaces the CLAUDE.md / AGENTS.md paragraph, which APM cannot edit).
 
@@ -79,7 +79,7 @@ installers/{claude,codex}/install.sh          non-APM fallbacks (installers/merg
 
 Tested against synthetic fixtures, documented schemas and temp-HOME APM installs only:
 
-- Codex `SessionStart` `source` for `/new` (matcher is `startup|clear|new`; if it differs, handoffs will not auto-load), whether `transcript_path` is the live rollout, and that hooks run through a shell.
+- Codex `SessionStart` `source` for `/new` (matcher is `startup|clear`; if it differs, handoffs will not auto-load), whether `transcript_path` is the live rollout, and that hooks run through a shell.
 - Whether Codex loads skills from `~/.agents/skills`, honors `agents/openai.yaml` there, and tolerates the `disable-model-invocation` frontmatter key.
 - Whether Claude Code passes text typed after `/handoff` (the skill has no `$ARGUMENTS`) and lists the skill as `/handoff`.
 - The install directory name for git installs; only local-path installs were tested.
