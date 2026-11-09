@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -282,22 +283,37 @@ def _project_filter(project: str | None, col: str) -> tuple[str, list]:
     return f" AND {col} LIKE ?", [f"%{project.replace('/', '-')}%"]
 
 
+def _source_filter(source: str | None, col: str) -> tuple[str, list]:
+    if not source:
+        return "", []
+    return f" AND {col} = ?", [source]
+
+
+_SOURCE_ERR = "Invalid source {!r}: use 'claude' or 'codex'."
+
+
 @mcp.tool()
-def search_sessions(query: str, project: str | None = None, since: str | None = None, limit: int = 20) -> str:
-    """Full-text search across all past Claude Code sessions (all projects).
+def search_sessions(
+    query: str, project: str | None = None, since: str | None = None, limit: int = 20, source: str | None = None
+) -> str:
+    """Full-text search across all past Claude Code and Codex sessions (all projects).
 
     query: FTS5 syntax — words are ANDed; use "exact phrase", OR, prefix*, NEAR(a b).
     project: substring of project path, e.g. "firmware" or "/Users/x/Drones/ExpressLRS".
     since: ISO date, e.g. "2026-09-01".
+    source: "claude" or "codex" to restrict to one tool; default searches both.
     Returns matching snippets with session id; use read_session to see full context.
     """
+    if source and source not in ("claude", "codex"):
+        return _SOURCE_ERR.format(source)
     con = _sync()
     pf, pargs = _project_filter(project, "m.project")
+    sf, sargs = _source_filter(source, "s.source")
     sql = (
-        "SELECT m.session, m.project, m.ts, m.role, snippet(msgs, 0, '[', ']', '…', 24), s.title"
-        " FROM msgs m LEFT JOIN sessions s ON s.id = m.session WHERE msgs MATCH ?" + pf
+        "SELECT m.session, m.project, m.ts, m.role, snippet(msgs, 0, '[', ']', '…', 24), s.title, s.source"
+        " FROM msgs m LEFT JOIN sessions s ON s.id = m.session WHERE msgs MATCH ?" + pf + sf
     )
-    args = [query, *pargs]
+    args = [query, *pargs, *sargs]
     if since:
         sql += " AND m.ts >= ?"
         args.append(since)
@@ -315,30 +331,37 @@ def search_sessions(query: str, project: str | None = None, since: str | None = 
     if not rows:
         return "No matches."
     return "\n\n".join(
-        f"[{ts[:16] if ts else '?'}] session={sid} project={proj} title={title!r} role={role}\n  {snip}"
-        for sid, proj, ts, role, snip, title in rows
+        f"[{ts[:16] if ts else '?'}] session={sid} source={src} project={proj} title={title!r} role={role}\n  {snip}"
+        for sid, proj, ts, role, snip, title, src in rows
     )
 
 
 @mcp.tool()
-def list_sessions(project: str | None = None, since: str | None = None, limit: int = 30) -> str:
-    """List past sessions, newest first, with title, branch, time range and first prompt.
+def list_sessions(
+    project: str | None = None, since: str | None = None, limit: int = 30, source: str | None = None
+) -> str:
+    """List past Claude Code and Codex sessions, newest first, with title, branch, time range and first prompt.
 
     project: substring of project path, e.g. "firmware".
     since: ISO date, e.g. "2026-09-01".
+    source: "claude" or "codex" to restrict to one tool; default lists both.
     """
+    if source and source not in ("claude", "codex"):
+        return _SOURCE_ERR.format(source)
     con = _sync()
     pf, args = _project_filter(project, "project")
-    sql = "SELECT id, project, branch, title, first_prompt, started, ended, n FROM sessions WHERE n > 0" + pf
+    sf, sargs = _source_filter(source, "source")
+    args += sargs
+    sql = "SELECT id, project, branch, title, first_prompt, started, ended, n, source FROM sessions WHERE n > 0" + pf + sf
     if since:
         sql += " AND ended >= ?"
         args.append(since)
     sql += " ORDER BY ended DESC LIMIT ?"
     args.append(limit)
     out = []
-    for sid, proj, branch, title, fp, start, end, n in con.execute(sql, args):
+    for sid, proj, branch, title, fp, start, end, n, src in con.execute(sql, args):
         out.append(
-            f"{sid}  {(start or '?')[:16]} → {(end or '?')[:16]}  msgs={n}  project={proj}  branch={branch}\n"
+            f"{sid}  {(start or '?')[:16]} → {(end or '?')[:16]}  msgs={n}  source={src}  project={proj}  branch={branch}\n"
             f"  title: {title}\n  first: {(fp or '').splitlines()[0][:200] if fp else ''}"
         )
     return "\n".join(out) or "No sessions."
@@ -348,7 +371,7 @@ def list_sessions(project: str | None = None, since: str | None = None, limit: i
 def read_session(
     session_id: str, offset: int = 0, limit: int = 60, include_tools: bool = False, grep: str | None = None
 ) -> str:
-    """Read a past session's conversation in order.
+    """Read a past Claude Code or Codex session's conversation in order.
 
     offset/limit: page through messages (check 'total' in header).
     include_tools: also show tool calls and (truncated) tool results.
@@ -356,7 +379,7 @@ def read_session(
     """
     con = _sync()
     meta = con.execute(
-        "SELECT project, cwd, branch, title, started, ended FROM sessions WHERE id LIKE ?", (session_id + "%",)
+        "SELECT project, cwd, branch, title, started, ended, source FROM sessions WHERE id LIKE ?", (session_id + "%",)
     ).fetchone()
     if not meta:
         return f"Unknown session {session_id}."
@@ -368,12 +391,15 @@ def read_session(
         args.append(grep)
     total = con.execute(sql.replace("ts, role, text", "count(*)"), args).fetchone()[0]
     rows = con.execute(sql + " ORDER BY rowid LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
-    proj, cwd, branch, title, start, end = meta
-    head = f"# {title}\nproject={proj} cwd={cwd} branch={branch} {start} → {end}\nshowing {offset}-{offset + len(rows)} of {total}\n"
+    proj, cwd, branch, title, start, end, src = meta
+    head = f"# {title}\nsource={src} project={proj} cwd={cwd} branch={branch} {start} → {end}\nshowing {offset}-{offset + len(rows)} of {total}\n"
     body = "\n\n".join(f"--- {role} [{(ts or '')[11:16]}]\n{text}" for ts, role, text in rows)
     return head + "\n" + body
 
 
 if __name__ == "__main__":
     os.makedirs(DB_PATH.parent, exist_ok=True)
-    mcp.run()
+    if "--sync" in sys.argv[1:]:
+        _sync().close()
+    else:
+        mcp.run()
