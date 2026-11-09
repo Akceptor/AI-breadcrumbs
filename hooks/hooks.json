@@ -2,7 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|clear|new",
+        "matcher": "startup|clear",
         "hooks": [
           {"type": "command", "command": "python3 ${PLUGIN_ROOT}/scripts/handoff-load.py 2>/dev/null || true", "timeout": 10}
         ]
