@@ -1,16 +1,18 @@
 # claude-breadcrumbs
 
-Session continuity for Claude Code: find past work, and carry verified state across `/clear`.
+Session continuity for Claude Code and Codex CLI: find past work, and carry verified state across `/clear` (Claude Code) or `/new` (Codex).
 
 ## Components
 
 ### `sessions-mcp/` — search past sessions
 
-MCP server that indexes every Claude Code transcript (`~/.claude/projects/*/*.jsonl`) into a local SQLite FTS5 database and exposes:
+MCP server that indexes every Claude Code transcript (`~/.claude/projects/*/*.jsonl`) and every Codex rollout (`$CODEX_HOME/sessions/**/rollout-*.jsonl[.zst]`, default `~/.codex`) into one local SQLite FTS5 database and exposes:
 
-- `search_sessions(query, project?, since?, limit?)` — full-text search, FTS5 syntax
-- `list_sessions(project?, since?, limit?)` — recent sessions with title, branch, first prompt
+- `search_sessions(query, project?, since?, limit?, source?)` — full-text search, FTS5 syntax
+- `list_sessions(project?, since?, limit?, source?)` — recent sessions with title, branch, first prompt
 - `read_session(session_id, offset?, limit?, include_tools?, grep?)` — page through a conversation
+
+`source` is `claude` or `codex`; omit it to search both. Codex sessions use the cwd slug as `project`, like Claude, so the `project` filter works across both. Codex subagent rollouts are skipped. Codex stores most older rollouts zstd-compressed, hence the `zstandard` dependency (handled by the `uv` inline script header); `server.py --sync` indexes everything once and exits, used by the installers to pre-warm.
 
 Indexing is incremental (per-file offset + mtime) and runs on each tool call. The database lives at `~/.claude/session-index/index.db`.
 
@@ -64,6 +66,41 @@ Then add to `~/.claude/settings.json`:
 
 Workflow: `/handoff` → `/clear` → new session starts with the checkpoint loaded.
 
+## Codex CLI
+
+Requires [uv](https://docs.astral.sh/uv/), `python3` and the `codex` CLI (developed against codex-cli 0.167.0).
+
+```sh
+codex/install.sh
+```
+
+The installer (idempotent):
+
+- copies `sessions-mcp/server.py` to `~/.claude/session-index/server.py` (shared with the Claude install) and runs `codex mcp add sessions`;
+- installs the `$handoff` skill to `$CODEX_HOME/skills/handoff/` (explicit invocation only);
+- copies the hooks to `$CODEX_HOME/hooks/` and merges `SessionStart` (matcher `startup|clear`) and `UserPromptSubmit` entries with absolute paths into `$CODEX_HOME/hooks.json` (a `.bak` is written);
+- adds a "Past sessions" paragraph to `$CODEX_HOME/AGENTS.md`;
+- pre-warms the index.
+
+It refuses to run if `config.toml` already defines `[hooks]`, since Codex warns about mixing `hooks.json` and `config.toml` hooks.
+
+**Trust step:** Codex skips new or changed hooks until you approve them. After installing, open Codex, run `/hooks` and trust the two new hooks. Trust is per hook hash, so if a later install changes a hook command you must re-trust it.
+
+Workflow: `$handoff` -> `/new` -> the new session starts with the checkpoint loaded. Handoffs live in `$CODEX_HOME/handoffs/<cwd-slug>.md` and are renamed to `<cwd-slug>.prev.md` once loaded (one-shot, ignored after 3 days).
+
+The Codex `ctx-guard` nudges at 50% / 70% / 85% of the model's context window (once per band per session; `last_token_usage.input_tokens` against `model_context_window`), or at a single 200k-token band if the rollout reports no window. Codex auto-compacts, so the top band may rarely fire. It ignores subagent prompts.
+
+Not verified yet (tested only against synthetic fixtures and the documented hook schemas):
+
+- which `SessionStart` `source` Codex sends for `/new` versus its clear-terminal command. The matcher is `startup|clear`; if `/new` reports something else the handoff will not auto-load, and the matcher needs adjusting;
+- that `transcript_path` is the active rollout file (the hook falls back to globbing by `session_id`);
+- that hook commands run through a shell (`|| true`, `2>/dev/null`);
+- Codex MCP `tool_timeout_sec` and approval defaults: the installer sets neither, so Codex may prompt before each `sessions` tool call and a very large first index could hit a tool timeout (the pre-warm exists to avoid this);
+- whether `$handoff` receives extra text typed after it (no `$ARGUMENTS` substitution is assumed), and the `/skills` picker behavior;
+- Codex's auto-compaction threshold and rollout retention.
+
+The rollout format is not a stable Codex interface. If a future Codex stops appending to the JSONL rollouts (it has hints of a paginated history store), the index will silently go stale.
+
 ## Privacy
 
-The index database, handoff files and transcripts contain your conversations. They stay local; none of them belong in this repo (`index.db` is gitignored).
+The index database, handoff files (`~/.claude/projects/*/handoff*.md`, `~/.codex/handoffs/`) and transcripts contain your conversations. They stay local; none of them belong in this repo (`index.db` is gitignored).
