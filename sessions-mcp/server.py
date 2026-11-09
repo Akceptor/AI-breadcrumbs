@@ -20,7 +20,7 @@ mcp = FastMCP("sessions")
 
 
 def _db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, offset INTEGER, mtime REAL);
@@ -32,6 +32,13 @@ def _db() -> sqlite3.Connection:
             tokenize='porter unicode61');
         """
     )
+    if con.execute("PRAGMA user_version").fetchone()[0] < 1:
+        if "source" not in [r[1] for r in con.execute("PRAGMA table_info(sessions)")]:
+            try:
+                con.execute("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'")
+            except sqlite3.OperationalError:
+                pass  # another process migrated between the check and the ALTER
+        con.execute("PRAGMA user_version=1")
     return con
 
 
@@ -70,7 +77,7 @@ def _index_file(con: sqlite3.Connection, path: Path, project: str, offset: int) 
             sid = rec.get("sessionId")
             if not sid:
                 continue
-            con.execute("INSERT OR IGNORE INTO sessions(id, project) VALUES(?, ?)", (sid, project))
+            con.execute("INSERT OR IGNORE INTO sessions(id, project, source) VALUES(?, ?, 'claude')", (sid, project))
             typ = rec.get("type")
             if typ == "ai-title":
                 con.execute("UPDATE sessions SET title=? WHERE id=?", (rec.get("aiTitle"), sid))
@@ -100,18 +107,26 @@ def _index_file(con: sqlite3.Connection, path: Path, project: str, offset: int) 
 
 def _sync() -> sqlite3.Connection:
     con = _db()
-    known = {p: (o, m) for p, o, m in con.execute("SELECT path, offset, mtime FROM files")}
-    for path in PROJECTS.glob("*/*.jsonl"):
-        st = path.stat()
-        key = str(path)
-        offset, mtime = known.get(key, (0, 0))
-        if st.st_mtime == mtime and st.st_size == offset:
-            continue
-        if st.st_size < offset:
-            offset = 0  # file was rewritten
-        new_offset = _index_file(con, path, path.parent.name, offset)
-        con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?)", (key, new_offset, st.st_mtime))
-    con.commit()
+    # Claude and Codex each run their own server process on the same DB. Taking the
+    # write lock before reading `files` makes the second process wait and then see
+    # the first one's offsets; otherwise both re-index the same lines and duplicate msgs.
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        known = {p: (o, m) for p, o, m in con.execute("SELECT path, offset, mtime FROM files")}
+        for path in PROJECTS.glob("*/*.jsonl"):
+            st = path.stat()
+            key = str(path)
+            offset, mtime = known.get(key, (0, 0))
+            if st.st_mtime == mtime and st.st_size == offset:
+                continue
+            if st.st_size < offset:
+                offset = 0  # file was rewritten
+            new_offset = _index_file(con, path, path.parent.name, offset)
+            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?)", (key, new_offset, st.st_mtime))
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    con.execute("COMMIT")
     return con
 
 

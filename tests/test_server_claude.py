@@ -84,3 +84,27 @@ def test_c5_read_session(server):
     out = server.read_session(SID, grep="ESPTOOL")
     assert "esptool" in out and "How do I flash" not in out
     assert "Unknown session" in server.read_session("zzzz")
+
+
+def test_s1_concurrent_syncs_do_not_duplicate(server):
+    import threading
+
+    for _ in range(8):
+        server.DB_PATH.unlink(missing_ok=True)
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def run():
+            try:
+                barrier.wait()
+                server._sync().close()
+            except Exception as e:
+                errors.append(e)
+
+        ts = [threading.Thread(target=run) for _ in range(2)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert not errors
+        con = server._db()
+        assert con.execute("SELECT count(*) FROM msgs").fetchone()[0] == 4
+        con.close()
