@@ -11,12 +11,12 @@ SERVER_DIR="$HOME/.claude/session-index"
 SERVER="$SERVER_DIR/server.py"
 HOOKS_JSON="$CODEX_HOME/hooks.json"
 AGENTS_MD="$CODEX_HOME/AGENTS.md"
-PLUGIN_ROOT="$CODEX_HOME/hooks/claude-breadcrumbs"
+PLUGIN_ROOT="$CODEX_HOME/hooks/ai-breadcrumbs"
 
 [ -x "$UV" ] || { echo "uv not found; install it (brew install uv)"; exit 1; }
 command -v codex >/dev/null 2>&1 || { echo "codex not found on PATH"; exit 1; }
-if grep -qs 'claude-breadcrumbs' "$HOME/.apm/apm.lock.yaml"; then
-  echo "claude-breadcrumbs is installed via APM; don't mix it with this installer (uninstall it first: apm uninstall -g Akceptor/claude-breadcrumbs)."
+if grep -qsi 'ai-breadcrumbs' "$HOME/.apm/apm.lock.yaml"; then
+  echo "AI-breadcrumbs is installed via APM; don't mix it with this installer (uninstall it first: apm uninstall -g Akceptor/AI-breadcrumbs)."
   exit 1
 fi
 if grep -Eq '^\s*\[+\s*hooks[].]' "$CODEX_HOME/config.toml" 2>/dev/null; then

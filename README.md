@@ -1,4 +1,4 @@
-# claude-breadcrumbs
+# AI-breadcrumbs
 
 Session continuity for Claude Code and Codex CLI: search past sessions of both tools, and carry verified state across `/clear` (Claude Code) or `/new` (Codex), including from one tool to the other.
 
@@ -21,9 +21,9 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), `python3`, [APM](https://github
          targets: [claude]
    ```
 
-2. `apm install -g Akceptor/claude-breadcrumbs`
+2. `apm install -g Akceptor/AI-breadcrumbs`
 3. Pre-warm the MCP environment and index (avoids a startup timeout on the first tool call):
-   `uvx --from git+ssh://git@github.com/Akceptor/claude-breadcrumbs breadcrumbs-mcp --sync`
+   `uvx --from git+ssh://git@github.com/Akceptor/AI-breadcrumbs breadcrumbs-mcp --sync`
 4. **Codex only:** open Codex, run `/hooks` and trust the two new hooks. Codex skips untrusted hooks, and a changed hook command needs re-trusting.
 5. Claude Code, optional (APM cannot set these): in `~/.claude/settings.json` allow the tools and stop transcript cleanup:
 
@@ -31,7 +31,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), `python3`, [APM](https://github
    { "cleanupPeriodDays": 3650, "permissions": { "allow": ["mcp__sessions"] } }
    ```
 
-Update: `apm update -g` for hooks and skills (the MCP server tracks `main` on each start). Uninstall: `apm uninstall -g Akceptor/claude-breadcrumbs`.
+Update: `apm update -g` for hooks and skills (the MCP server tracks `main` on each start). Uninstall: `apm uninstall -g Akceptor/AI-breadcrumbs`.
 
 ### Where things land (user scope)
 
@@ -54,11 +54,11 @@ Update: `apm update -g` for hooks and skills (the MCP server tracks `main` on ea
 
 ### MCP trade-off
 
-The MCP entry is `uvx --from git+ssh://git@github.com/Akceptor/claude-breadcrumbs breadcrumbs-mcp`, unpinned. Each start runs a `git fetch`, so it needs GitHub reachable and fails offline; the first start also builds the environment. Offline options: pin `@<sha>` in the `--from` URL (no fetch, runs from cache), or register `uv run -q --script <path>/server/server.py` yourself.
+The MCP entry is `uvx --from git+ssh://git@github.com/Akceptor/AI-breadcrumbs breadcrumbs-mcp`, unpinned. Each start runs a `git fetch`, so it needs GitHub reachable and fails offline; the first start also builds the environment. Offline options: pin `@<sha>` in the `--from` URL (no fetch, runs from cache), or register `uv run -q --script <path>/server/server.py` yourself.
 
 ## Fallback install without APM
 
-Do not combine with an APM install (the installers refuse when `~/.apm/apm.lock.yaml` lists this package). Both are idempotent, copy `server/server.py` to `~/.claude/session-index/`, install the `handoff` skill and hooks under `<tool home>/hooks/claude-breadcrumbs/scripts/`, and add a "Past sessions" paragraph to `CLAUDE.md` / `AGENTS.md`.
+Do not combine with an APM install (the installers refuse when `~/.apm/apm.lock.yaml` lists this package). Both are idempotent, copy `server/server.py` to `~/.claude/session-index/`, install the `handoff` skill and hooks under `<tool home>/hooks/ai-breadcrumbs/scripts/`, and add a "Past sessions" paragraph to `CLAUDE.md` / `AGENTS.md`.
 
 ```sh
 installers/claude/install.sh   # needs the claude CLI; also sets cleanupPeriodDays and allows mcp__sessions

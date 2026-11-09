@@ -1,4 +1,4 @@
-name: claude-breadcrumbs
+name: AI-breadcrumbs
 version: 0.1.0
 description: Session search MCP + cross-tool handoff for Claude Code and Codex CLI
 author: Akceptor
@@ -11,4 +11,4 @@ dependencies:
       registry: false
       transport: stdio
       command: uvx
-      args: ["--from", "git+ssh://git@github.com/Akceptor/claude-breadcrumbs", "breadcrumbs-mcp"]
+      args: ["--from", "git+ssh://git@github.com/Akceptor/AI-breadcrumbs", "breadcrumbs-mcp"]
