@@ -3,10 +3,8 @@ import glob, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from breadcrumbs_common import codex_home, detect_tool, state_path
 
-CLAUDE_BANDS = (200_000, 350_000, 500_000)
-CODEX_FRACTIONS = (0.5, 0.7, 0.8, 0.85)
+BANDS = (200_000, 350_000, 500_000)
 REPEAT_PROMPTS = 3
-CODEX_FALLBACK_TOKENS = 200_000  # single absolute band when the rollout reports no context window
 
 
 def tail_lines(path):
@@ -28,8 +26,8 @@ def claude_ctx(lines):
         u = r.get("message", {}).get("usage") or {}
         ctx = u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
         if ctx:
-            return ctx, CLAUDE_BANDS
-    return 0, CLAUDE_BANDS
+            return ctx, BANDS
+    return 0, BANDS
 
 
 def codex_ctx(lines):
@@ -45,9 +43,8 @@ def codex_ctx(lines):
             continue
         ctx = (info.get("last_token_usage") or {}).get("input_tokens") or 0
         if ctx:
-            window = info.get("model_context_window") or p.get("model_context_window") or 0
-            return ctx, [window * f for f in CODEX_FRACTIONS] if window else [CODEX_FALLBACK_TOKENS]
-    return 0, [CODEX_FALLBACK_TOKENS]
+            return ctx, BANDS
+    return 0, BANDS
 
 
 d = json.load(sys.stdin)
