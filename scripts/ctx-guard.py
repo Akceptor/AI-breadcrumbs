@@ -75,13 +75,19 @@ if tool == "codex":
     # Older installs saved only the last warning band as an integer.
     if isinstance(previous, int):
         previous = {"band": previous, "prompts_since_warning": 0}
-    acknowledged = previous.get("acknowledged", False) or bool(
-        re.match(r"^\s*\$handoff(?:\s|$)", d.get("prompt") or ""))
+    if "acknowledged" in previous:
+        previous.setdefault("ack_band", previous["band"] if previous["acknowledged"] else 0)
+    if band < previous.get("band", 0):
+        previous = {}
+    ack_band = previous.get("ack_band", 0)
+    if re.match(r"^\s*\$handoff(?:\s|$)", d.get("prompt") or ""):
+        ack_band = band
+    acknowledged = ack_band >= band
     prompts = previous.get("prompts_since_warning", 0) + 1
     warn = not acknowledged and (band > previous.get("band", 0) or prompts >= REPEAT_PROMPTS)
     with open(state, "w") as f:
         json.dump({"band": band, "prompts_since_warning": 0 if warn else prompts,
-                   "acknowledged": acknowledged}, f)
+                   "ack_band": ack_band}, f)
     if not warn:
         sys.exit(0)
 else:
